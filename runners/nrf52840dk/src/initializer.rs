@@ -257,6 +257,11 @@ pub fn init_board(dp: nrf52840_pac::Peripherals) -> BoardComponents {
     // efs aliased to the same NVMC filesystem as ifs.
     let store = RunnerStore::new(internal_fs, internal_fs, volatile_fs);
 
+    // Диагностика без пробника: 2 коротких мига = FS смонтирован
+    // (при необходимости — уже отформатирован).
+    #[cfg(feature = "led-diag")]
+    crate::board::blink_raw(2, 4_000_000, 4_000_000);
+
     // USB identity from the persisted DeviceConfig (admin SET_CONFIG), read now
     // that the FS is mounted. Defaults to SoloKeys 0x1209:0xbeee; a `wallet`
     // build can be set to emulate Ledger (0x2c97:0x7000) for host tools.
@@ -289,6 +294,11 @@ pub fn init_board(dp: nrf52840_pac::Peripherals) -> BoardComponents {
             .build()
     };
 
+    // Диагностика без пробника: одна длинная вспышка = USB поднят (D+ подтянут,
+    // хост может начинать перечисление).
+    #[cfg(feature = "led-diag")]
+    crate::board::blink_raw(1, 2_000_000, 2_000_000);
+
     // Run migrations on persistent state before any app touches the
     // filesystem. Idempotent: safe on every boot, no-op on already-migrated
     // state, no-op on a fresh device whose `fido/dat` directory does not yet
@@ -308,21 +318,33 @@ pub fn init_board(dp: nrf52840_pac::Peripherals) -> BoardComponents {
     // it's missing. Without this, CTAP1 `Register` and CTAP2 `MakeCredential`
     // return `KeyReferenceNotFound (0x6A88)`. Gated by `test-up-control` so
     // production builds never include the test key.
-    #[cfg(feature = "test-up-control")]
+    // FIDO2 attestation keypair. Заводское solo2 кладёт СВОЙ per-device ключ на
+    // производстве; у нашего самодельного ключа его нет, и БЕЗ него регистрация
+    // не проходит вовсе: CTAP2 MakeCredential отвечает KeyReferenceNotFound
+    // (0x6A88), что Windows показывает как «Невозможно использовать этот ключ
+    // безопасности». Поэтому вписываем публичный ТЕСТОВЫЙ PKI Nitrokey FIDO
+    // (тот же, что использует pc-раннер) — этого достаточно, чтобы ключ
+    // регистрировался.
+    //
+    // НЕ путать с фичей `test-up-control`: она заодно подменяет чтение кнопки
+    // статиком для тестов через JTAG и на боевой прошивке недопустима.
+    // Пишем один раз — если файлы уже есть, не трогаем (не изнашиваем флеш).
     {
         use trussed::store::Store as _;
         const ATTESTATION_CERT: &[u8] = include_bytes!("../../pc/data/fido-cert.der");
         const ATTESTATION_KEY: &[u8] = include_bytes!("../../pc/data/fido-key.trussed");
         let ifs = store.ifs();
-        let _ = ifs.create_dir_all(littlefs2::path!("fido/x5c"));
-        let _ = ifs.create_dir_all(littlefs2::path!("fido/sec"));
-        let rc = ifs.write(littlefs2::path!("fido/x5c/00"), ATTESTATION_CERT);
-        let rk = ifs.write(littlefs2::path!("fido/sec/00"), ATTESTATION_KEY);
-        defmt::warn!(
-            "test-up-control: prov FIDO attestation cert.write={=bool} key.write={=bool}",
-            rc.is_ok(),
-            rk.is_ok(),
-        );
+        if !ifs.exists(littlefs2::path!("fido/sec/00")) {
+            let _ = ifs.create_dir_all(littlefs2::path!("fido/x5c"));
+            let _ = ifs.create_dir_all(littlefs2::path!("fido/sec"));
+            let rc = ifs.write(littlefs2::path!("fido/x5c/00"), ATTESTATION_CERT);
+            let rk = ifs.write(littlefs2::path!("fido/sec/00"), ATTESTATION_KEY);
+            defmt::info!(
+                "attestation: provisioned cert.ok={=bool} key.ok={=bool}",
+                rc.is_ok(),
+                rk.is_ok(),
+            );
+        }
     }
 
     let dev_rng = Rng::new(dp.RNG);

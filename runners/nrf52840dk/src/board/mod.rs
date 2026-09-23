@@ -6,6 +6,15 @@
 //! `UserInterface`: `poll_buttons` latches a gesture and `refresh_up_led`
 //! lights LED4 while a sign or FIDO op waits for presence.
 
+// Диагностика без отладчика (мигание светодиодом) — общая для всех плат,
+// потому что вызывается из обработчиков прерываний/паники и раннего кода.
+#[allow(dead_code)] // часть функций живёт только под фичей `led-diag`
+mod diag;
+pub use diag::{blink_digit, blink_raw, spin};
+// Доклад о трассе EP0 нужен только сборкам с `led-diag`.
+#[cfg(feature = "led-diag")]
+pub use diag::{note_usb_events, report_tick};
+
 #[cfg(feature = "board-dk")]
 pub mod dk;
 #[cfg(feature = "board-dk")]
@@ -16,11 +25,24 @@ pub mod solo;
 #[cfg(feature = "board-solo")]
 pub use solo::{init, Buttons, Leds};
 
-#[cfg(all(feature = "board-dk", feature = "board-solo"))]
-compile_error!("`board-dk` and `board-solo` are mutually exclusive — pick one");
+#[cfg(feature = "board-supermini")]
+pub mod supermini;
+#[cfg(feature = "board-supermini")]
+pub use supermini::{init, Buttons, Leds};
 
-#[cfg(not(any(feature = "board-dk", feature = "board-solo")))]
-compile_error!("enable one of `board-dk` / `board-solo` (default = `board-dk`)");
+#[cfg(any(
+    all(feature = "board-dk", feature = "board-solo"),
+    all(feature = "board-dk", feature = "board-supermini"),
+    all(feature = "board-solo", feature = "board-supermini")
+))]
+compile_error!("`board-dk`, `board-solo` and `board-supermini` are mutually exclusive — pick one");
+
+#[cfg(not(any(
+    feature = "board-dk",
+    feature = "board-solo",
+    feature = "board-supermini"
+)))]
+compile_error!("enable one of `board-dk` / `board-solo` / `board-supermini` (default = `board-dk`)");
 
 use core::time::Duration;
 use cortex_m::peripheral::SCB;
@@ -188,6 +210,25 @@ fn read_presence() -> Presence {
             _ => return Presence::Pending,
         }
     }
+    // ── НАШ ФИКС (в апстриме его нет) ───────────────────────────────────
+    // Пока FIDO ждёт касания, trussed крутит свой UP-цикл ВНУТРИ задачи
+    // `syscall` (приоритет выше idle), поэтому idle-цикл заморожен: ни
+    // `poll_buttons`, ни `refresh_up_led` там не выполняются. Защёлкнутый
+    // жест поэтому не появляется, и ожидание висит вечно. Читаем пин
+    // напрямую — это работает из любого контекста. Пины с внутренним pull-up
+    // (см. board/supermini.rs), активный уровень низкий: замкнуто на GND =
+    // нажато. PIN8 (P0.24) = отказ, PIN10 (P0.11) = подтверждение.
+    #[cfg(feature = "board-supermini")]
+    {
+        let pins = unsafe { (&*nrf52840_pac::P0::ptr()).in_.read().bits() };
+        if pins & (1 << 24) == 0 {
+            return Presence::Deny;
+        }
+        if pins & (1 << 11) == 0 {
+            return Presence::Grant(consent::Level::Normal);
+        }
+    }
+
     if crate::nfct::field_on() && !ndef_app::has_override() {
         return Presence::Grant(consent::Level::Normal);
     }
@@ -293,6 +334,8 @@ static CONSENT_START: core::sync::atomic::AtomicU32 = core::sync::atomic::Atomic
 #[cfg(feature = "test-up-control")]
 #[unsafe(link_section = ".uninit")]
 #[unsafe(no_mangle)]
+// 0 = штатное поведение (ждём касание по пину). Значения 1/2/129/130
+// работают только в диагностической сборке с фичей `test-up-control`.
 pub static mut UP_CONTROL: u8 = 0;
 
 // ── UP-indicator LED, in the idle loop ───────────────────────────────────────
@@ -320,7 +363,11 @@ pub fn refresh_up_led(leds: &mut Leds) {
             false
         }
     };
-    leds.set_brightness(if waiting { 255 } else { 0 });
+    // Диагностика: пока канал занят узорами (`LED_CHANNEL_RESERVED`), штатный
+    // индикатор молчит, иначе он замаскирует диагностические миги.
+    if !diag::LED_CHANNEL_RESERVED.load(core::sync::atomic::Ordering::Relaxed) {
+        leds.set_brightness(if waiting { 255 } else { 0 });
+    }
 }
 
 // ── Trussed UserInterface ────────────────────────────────────────────────────
@@ -366,6 +413,19 @@ impl trussed::platform::UserInterface for UserInterface {
             matches!(status, ui::Status::WaitingForUserPresence),
             Ordering::Relaxed,
         );
+        // Тот же корень, что и в `read_presence`: во время ожидания UP idle
+        // заморожен, поэтому `refresh_up_led` не успевает. Зажигаем пин
+        // светодиода напрямую (P0.15, active-high — см. board/supermini.rs).
+        #[cfg(feature = "board-supermini")]
+        unsafe {
+            let p0 = &*nrf52840_pac::P0::ptr();
+            let waiting = matches!(status, ui::Status::WaitingForUserPresence);
+            if waiting {
+                p0.outset.write(|w| w.bits(1 << 15));
+            } else {
+                p0.outclr.write(|w| w.bits(1 << 15));
+            }
+        }
     }
 
     fn status(&self) -> ui::Status {

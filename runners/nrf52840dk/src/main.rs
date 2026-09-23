@@ -9,9 +9,30 @@
 #![no_main]
 
 use defmt_rtt as _;
-use panic_halt as _;
+
+// Свой обработчик паники вместо `panic-halt`: без J-Link единственный способ
+// узнать, ГДЕ упало, — «продиктовать» номер строки исходника миганием.
+// Формат: 5 медленных мигов (маркер паники) → пауза → группа «сотни» →
+// группа «десятки» → группа «единицы» → длинная пауза, по кругу.
+// Группа = N быстрых мигов; пустая группа (ноль мигов) = цифра 0.
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    let line = info.location().map(|l| l.line()).unwrap_or(0);
+    loop {
+        board::blink_raw(5, 16_000_000, 16_000_000); // маркер: это паника
+        board::spin(96_000_000);
+        board::blink_digit(line / 100);
+        board::blink_digit((line / 10) % 10);
+        board::blink_digit(line % 10);
+        board::spin(192_000_000);
+    }
+}
 
 mod board;
+// No capacitive-touch pads on the SuperMini/nice!nano footprint, so the
+// driver is only compiled for boards that actually have them (the crate
+// denies dead_code, and an unused module is an error, not a warning).
+#[cfg(not(feature = "board-supermini"))]
 mod cap_touch;
 mod device_config;
 mod dispatch;
@@ -54,8 +75,11 @@ unsafe fn HardFault(ef: &cortex_m_rt::ExceptionFrame) -> ! {
     // another exception inside the HardFault handler, which the Cortex-M
     // escalates to a CPU LOCKUP → silent chip reset (RESETREAS bit 3) →
     // we lose the fault context entirely. wfi() is safe to spin on.
+    //
+    // Без пробника defmt выше не виден, поэтому подпись HardFault — быстрое
+    // непрерывное мигание (отличимо от узора паники: там 3 медленных).
     loop {
-        cortex_m::asm::wfi();
+        board::blink_raw(1, 2_000_000, 2_000_000);
     }
 }
 
@@ -127,6 +151,52 @@ mod app {
 
     #[init]
     fn init(ctx: init::Context) -> (Shared, Local) {
+        // ДИАГНОСТИКА (только с фичей `test-up-control`). Статик `UP_CONTROL`
+        // лежит в `.uninit` — секция не инициализируется при старте, и значение
+        // из исходника в RAM не попадает (её пишет отладчик через JTAG). Поэтому
+        // пишем вручную: 129 = «approve sticky», каждый запрос UP удовлетворён.
+        #[cfg(feature = "test-up-control")]
+        unsafe {
+            core::ptr::write_volatile(&raw mut crate::board::UP_CONTROL, 129);
+        }
+
+        // Диагностика без пробника: приветствие до всего остального. Две
+        // длинные вспышки (~600 мс) с паузой означают «наш код получил
+        // управление». Если их не видно — до прошивки дело не дошло.
+        #[cfg(feature = "led-diag")]
+        {
+            crate::board::blink_raw(2, 40_000_000, 12_000_000);
+            crate::board::spin(24_000_000);
+        }
+        // Подпись владельца светодиода: 2 длинных + 7 коротких. Никакая чужая
+        // схема (зарядник, загрузчик) такого узора не даёт — по нему видно,
+        // что светодиодом управляет НАША прошивка.
+        #[cfg(feature = "led-diag")]
+        {
+            crate::board::blink_raw(7, 4_000_000, 4_000_000);
+            crate::board::spin(48_000_000);
+        }
+
+        // Причина ПРОШЛОЙ перезагрузки — по RESETREAS (загрузчик её не чистит,
+        // это записано в его же коде). Гасим регистр, чтобы следующий старт был
+        // чистым, и мигаем кодом: 1 = reset-пин, 2 = watchdog, 3 = программный
+        // сброс (NVIC_SystemReset), 4 = LOCKUP (ядро упало: HardFault → сброс),
+        // 5 = выход из System OFF.
+        {
+            let p = unsafe { &*nrf52840_pac::POWER::ptr() };
+            let reas = p.resetreas.read().bits();
+            p.resetreas.write(|w| unsafe { w.bits(reas) }); // write-1-to-clear
+            #[cfg(feature = "led-diag")]
+            if reas != 0 {
+                let code = (reas.trailing_zeros() + 1).min(5);
+                crate::board::blink_raw(code, 8_000_000, 8_000_000);
+                crate::board::spin(24_000_000);
+            }
+            #[cfg(not(feature = "led-diag"))]
+            let _ = reas;
+            let _ = &p;
+        }
+
         // SysTick monotonic — 1 kHz, used by UserInterface::uptime. (DWT
         // would wrap at ~67 s and panic trussed's user-presence loop.)
         Mono::start(ctx.core.SYST, SYSTICK_FREQ_HZ);
@@ -167,6 +237,19 @@ mod app {
     #[idle(shared = [apps, ctaphid_dispatch, apdu_dispatch, nfc_apdu_rq, usbd, ctaphid, #[cfg(feature = "ccid")] ccid, #[cfg(feature = "wallet")] wallet, #[cfg(feature = "wallet")] wallet_hid, ctaphid_keepalive_sender], local = [buttons, gesture, leds])]
     fn idle(mut ctx: idle::Context) -> ! {
         loop {
+            // Диагностика (только с фичей `led-diag`): события USBD читаем ДО
+            // любого poll(), чтобы не пропустить их, плюс неблокирующий доклад
+            // о трассе EP0. Блокировать цикл нельзя: драйвер считает таймаут
+            // EP0-IN по 5 SOF-кадрам (5 мс). Выключено — светодиод принадлежит
+            // штатной индикации «коснись ключа» (`refresh_up_led`).
+            #[cfg(feature = "led-diag")]
+            {
+                crate::board::note_usb_events();
+                use rtic_monotonics::Monotonic;
+                let now_ms = crate::app::Mono::now().duration_since_epoch().to_millis();
+                crate::board::report_tick(now_ms);
+            }
+
             // Poll the hoisted buttons every pass and latch any committed
             // gesture into the global consumed by `check_user_presence` (FIDO)
             // and `confirm_user_present_non_blocking` (wallet). Cheap except the throttled cap-touch
@@ -259,6 +342,12 @@ mod app {
 
     #[task(binds = USBD, priority = 6, shared = [usbd, ctaphid, #[cfg(feature = "ccid")] ccid, #[cfg(feature = "wallet")] wallet_hid, ctaphid_keepalive_sender])]
     fn on_usb(mut ctx: on_usb::Context) {
+        // Диагностика: отмечаем «сырые» события USBD раньше, чем драйвер их
+        // погасит. Видно в «пульсе» idle-цикла: +1 миг = был USB-reset,
+        // ещё +1 = приходил EP0 SETUP (хост реально запрашивал дескриптор).
+        #[cfg(feature = "led-diag")]
+        crate::board::note_usb_events();
+
         let ka_status = ctx.shared.usbd.lock(|usbd| {
             ctx.shared.ctaphid.lock(|ctaphid| {
                 #[cfg(feature = "wallet")]

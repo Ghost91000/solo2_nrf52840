@@ -1,0 +1,8 @@
+
+
+# сборка UF2 (наши скрипты)
+ubikey.uf2
+ubikey.bin
+.uf2-tools/venv/
+.uf2-tools/__pycache__/
+memory.x

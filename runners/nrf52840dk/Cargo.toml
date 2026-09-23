@@ -15,6 +15,11 @@ default = ["board-dk", "ccid"]
 # the compile_error! in src/board/mod.rs.
 board-dk    = []          # Nordic nRF52840-DK (PCA10056) dev board
 board-solo  = []          # SoloKeys USB custom board
+board-supermini = []      # SuperMini / nice!nano-compatible clone:
+                          # LED P0.15 (active-high), buttons P0.11 (approve,
+                          # PIN10) and P0.24 (deny, PIN8), NFC on P0.09/P0.10.
+                          # Uses memory.x.supermini (app at 0x26000, i.e. after
+                          # the stock nice!nano bootloader's SoftDevice).
 
 # USB-CCID (contact smartcard) alongside CTAPHID. ON by default. CCID's USB
 # EasyDMA traffic contends with NFCT EasyDMA on the RAM bus, which makes NFC
@@ -33,6 +38,12 @@ wallet = ["dep:wallet-app"]
 # Off by default; NEVER enable on firmware shipped to users.
 test-up-control = []
 
+# LED-диагностика без пробника (см. src/board/diag.rs): миги на старте и
+# неблокирующий доклад в idle. ЗАБИРАЕТ канал светодиода у штатной индикации
+# «коснись ключа», поэтому по умолчанию ВЫКЛЮЧЕНА — включать осознанно.
+# Наша, в апстриме её нет.
+led-diag = []
+
 # Compile out the CTAP2 reset 10s-after-boot window so the device-test
 # harness can authenticatorReset between cases (long-touch / Strong consent).
 # Test/dev builds only — NEVER ship.
@@ -40,10 +51,12 @@ no-reset-time-window = ["fido-authenticator/disable-reset-time-window"]
 
 [dependencies]
 cortex-m    .workspace = true
-cortex-m-rt = "0.7"
+cortex-m-rt = { version = "0.7", features = ["set-vtor"] }
 defmt       .workspace = true
 defmt-rtt   .workspace = true
-panic-halt  .workspace = true
+# NOTE: no `panic-halt` — this runner installs its own `#[panic_handler]` that
+# blinks the LED, because without a J-Link there is no other way to tell a
+# crashed firmware from a hung one. See `main.rs`.
 rtic            = { version = "2.0.0", features = ["thumbv7-backend"] }
 rtic-monotonics .workspace = true
 rtic-sync       .workspace = true

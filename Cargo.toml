@@ -194,3 +194,13 @@ apdu-dispatch = { git = "https://github.com/0x0ece/apdu-dispatch", rev = "3531b6
 # path — ~80 KB smaller .text on Cortex-M33 (no perf regression), lets all-apps +
 # ML-DSA-44 fit on the LPC55. Only ml-dsa is patched; sha3/intrinsics unchanged.
 libcrux-ml-dsa = { git = "https://github.com/0x0ece/libcrux", rev = "ee890a77" }
+# Vendored nrf-usbd 0.1.0 + the upstream fix for Windows enumeration
+# (nrf-rs/nrf-usbd PR #29, "Fix enumeration on windows"), which is in no
+# released version. Without it the EP0 IN "busy" bit is never cleared after the
+# SOF-timeout path, `write()` on EP0 returns `WouldBlock` forever, and the host
+# never receives the device descriptor (Windows: "сбой запроса дескриптора",
+# Code 43 — exactly what an unpatched solo2 nRF runner shows).
+nrf-usbd = { path = "components/nrf-usbd" }
+# usb-device 0.2.9 отдаёт bcdUSB 0x0210 (мусор) и не умеет BOS:
+# Windows не перечисляет устройство (Код 43). Патчим на USB 2.00.
+usb-device = { path = "components/usb-device" }

@@ -1,0 +1,26 @@
+/* Linker layout for the SuperMini nRF52840 (nice!nano-compatible clone)
+ * running under the stock nice!nano / Adafruit UF2 bootloader.
+ *
+ * Flash map (verified against Adafruit_nRF52_Bootloader: linker/nrf52840.ld
+ * and lib/sdk11/components/libraries/bootloader_dfu/dfu_types.h):
+ *
+ *   0x00000 .. 0x01000   MBR
+ *   0x01000 .. 0x26000   SoftDevice S140
+ *   0x26000 ..           application            <- this file
+ *   0xA4000 .. 0xF4000   littlefs region (see src/flash.rs)  <- app must end here
+ *   0xF4000 .. 0xFE000   bootloader (38 KiB)
+ *   0xFE000              MBR params page
+ *   0xFF000              bootloader settings (app CRC — written by the bootloader)
+ *
+ * 0xA4000 - 0x26000 = 504 KiB for the application.
+ *
+ * NOTE: upstream keeps `memory.x` out of git (it is board/bootloader specific),
+ * so this file is ours; build.rs copies it to OUT_DIR when the `board-supermini`
+ * feature is on. Without the SoftDevice present the app would instead start at
+ * 0x01000 — do not use this layout on boards without S140.
+ */
+MEMORY
+{
+  FLASH : ORIGIN = 0x00026000, LENGTH = 504K
+  RAM   : ORIGIN = 0x20000000, LENGTH = 256K
+}

@@ -8,7 +8,10 @@
 //! `device_config`, with the usb.* overrides gated on `wallet` (lpc55 gates on
 //! `hacker`); the nRF DK has no configurable status LED, so no led fields.
 
-use admin_app::{Config, ConfigField, ConfigString, ConfigValueMut, FieldType};
+use admin_app::{Config, ConfigField, ConfigString, ConfigValueMut};
+// Only the wallet-gated `field()` helper below needs `FieldType`.
+#[cfg(feature = "wallet")]
+use admin_app::FieldType;
 use serde::{Deserialize, Serialize};
 
 /// USB descriptor identity.
@@ -39,6 +42,7 @@ pub struct DeviceConfig {
     pub usb: UsbConfig,
 }
 
+#[cfg(feature = "wallet")]
 const fn field(name: &'static str, requires_reboot: bool, ty: FieldType) -> ConfigField {
     ConfigField {
         name,
@@ -63,17 +67,20 @@ static FIELDS: &[ConfigField] = &[];
 
 impl Config for DeviceConfig {
     fn field(&mut self, key: &str) -> Option<ConfigValueMut<'_>> {
-        Some(match key {
+        // Without `wallet` no key matches, so this is a plain `None` — written
+        // as a match (rather than `Some(match ...)`) so the non-wallet build
+        // has no unreachable code.
+        match key {
             #[cfg(feature = "wallet")]
-            "usb.vid" => ConfigValueMut::U16(&mut self.usb.vid),
+            "usb.vid" => Some(ConfigValueMut::U16(&mut self.usb.vid)),
             #[cfg(feature = "wallet")]
-            "usb.pid" => ConfigValueMut::U16(&mut self.usb.pid),
+            "usb.pid" => Some(ConfigValueMut::U16(&mut self.usb.pid)),
             #[cfg(feature = "wallet")]
-            "usb.manufacturer" => ConfigValueMut::Str(&mut self.usb.manufacturer),
+            "usb.manufacturer" => Some(ConfigValueMut::Str(&mut self.usb.manufacturer)),
             #[cfg(feature = "wallet")]
-            "usb.product" => ConfigValueMut::Str(&mut self.usb.product),
-            _ => return None,
-        })
+            "usb.product" => Some(ConfigValueMut::Str(&mut self.usb.product)),
+            _ => None,
+        }
     }
 
     fn migration_version(&self) -> Option<u32> {

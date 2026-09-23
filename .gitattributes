@@ -1,0 +1,5 @@
+# Скрипты сборки выполняются под bash — перевод строки CRLF их ломает.
+# (core.autocrlf=true на Windows переписывает LF -> CRLF при checkout.)
+*.sh text eol=lf
+toolchain-env.sh text eol=lf
+*.py text eol=lf

@@ -2639,8 +2639,6 @@ dependencies = [
 [[package]]
 name = "nrf-usbd"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "945a178131ac5f69941dadb0d51c8e17cbe34cc09a0e2d51c099160a463751b8"
 dependencies = [
  "cortex-m",
  "usb-device",
@@ -3623,7 +3621,6 @@ dependencies = [
  "nrf52840-hal",
  "nrf52840-pac",
  "opcard",
- "panic-halt",
  "piv-authenticator",
  "rtic",
  "rtic-monotonics",
@@ -4892,8 +4889,6 @@ dependencies = [
 [[package]]
 name = "usb-device"
 version = "0.2.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f6cc3adc849b5292b4075fc0d5fdcf2f24866e88e336dd27a8943090a520508"
 
 [[package]]
 name = "usbd-ccid"

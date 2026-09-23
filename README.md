@@ -1,152 +1,129 @@
-# 🐝 Solo 2
+# solo2_nrf52840 — FIDO2-ключ на nRF52840 (SuperMini / nice!nano)
 
-**Solo 2 is an open source FIDO2 security key.** It's a USB+NFC device that protects your accounts with passkeys/WebAuthn, and also speaks OATH (TOTP/HOTP), PIV, and OpenPGP. The hardware, the firmware, and the tooling are all open source — you can read every line, build it yourself, and verify what's running on your key.
+Форк [SoloKeys/solo2](https://github.com/solokeys/solo2), перенацеленный на плату
+**nRF52840** в форм-факторе nice!nano / SuperMini (клон). Упор проекта — **работа по USB
+и по NFC**: USB закрывает компьютеры и телефоны, NFC делает взаимодействие с телефоном
+удобным без сопряжения. BLE сознательно не используется.
 
-Solo 2 comes in two models:
+> ⚠️ Прошивка экспериментальная. Апстрим про nRF-раннер пишет прямо: «Experimental — for
+> developers only».
 
-- **Solo 2 Secure** — production key for consumer and enterprise use, to protect against phishing and other online attacks. It only runs firmware signed by SoloKeys, with secure boot and debug access sealed off.
-- **Solo 2 Hacker** — the same hardware, unlocked. Flash your own firmware, experiment with new features, and learn how a security key works end to end. This is also secure against online attacks.
+## Что уже работает
 
-👉 **Buy a key (or two!) at [solokeys.com](https://solokeys.com).**
+| Что | Состояние |
+|---|---|
+| USB-перечисление на Windows 11 | ✅ `HID\VID_1209&PID_BEEE` → «HID-compliant fido» |
+| CTAPHID + CTAP2 по USB | ✅ |
+| Регистрация и аутентификация пасскеи (WebAuthn) | ✅ проверено на webauthn.io, github.com, demo.yubico.com |
+| Attestation (тестовый PKI Nitrokey) | ✅ зашивается в LFS при первом старте |
+| Касание (approve/deny) | ⚠️ пины не подтверждены на клоне, см. «Известные проблемы» |
+| NFC (FIDO-over-NFC) | 🚧 в работе: транспорт в дереве есть, антенна не разведена |
 
-For everything you can *do* with a key — passkeys, SSH, git signing, disk/file encryption, TOTP, password stores, post-quantum — see the tutorials in [`examples/`](examples/) and [Awesome Solo](examples/AWESOME.md) list.
+## Что изменено относительно апстрима
 
-## Secure vs Hacker
+База — коммит апстрима `a3074439` («led: fix colors at boot»). Следующий за ним коммит
+ломает сборку nRF-раннера (`DynFilesystem` перестаёт быть `Sync` → `rtic::assert_send`),
+поэтому ветка `nrf52840-nfc` отведена именно от `a3074439`.
 
-   
+1. **`components/usb-device` — вендоренный форк `usb-device 0.2.9`.** В дескрипторе
+   устройства жёстко зашит `bcdUSB = 0x0210` (USB 2.1), а 2.1 обязывает отдавать дескриптор
+   **BOS**, которого в 0.2.x нет. Windows отказывает в перечислении (Код 43, «Сбой запроса
+   дескриптора USB-устройства»), Linux/macOS это прощают. Заявлено USB 2.0: `0x0210 → 0x0200`.
+2. **`components/nrf-usbd` — вендоренный форк `nrf-usbd 0.1.0`** с фиксом PR #29 (снятие
+   busy-бита EP0 по таймауту; в релизы фикс не попал) и хуками LED-трассировки.
+3. **Плата `board-supermini`** (`runners/nrf52840dk/src/board/supermini.rs`): светодиод
+   P0.15, пины подтверждения/отказа P0.11/P0.24, P0.13 (EXT_VCC) не трогается,
+   при старте гасятся все ШИМ-модули (загрузчик оставляет включённый ШИМ на светодиоде
+   и перед прыжком в приложение его не снимает).
+4. **Attestation-ключ** (`src/device_config.rs`): тестовый PKI Nitrokey FIDO зашивается в
+   LFS при первом старте, иначе `MakeCredential` возвращает `KeyReferenceNotFound (0x6A88)`.
+5. **Диагностика под фичей `led-diag`** (`src/board/diag.rs`): доклад состояния миганиями
+   светодиода — единственный доступный канал наблюдаемости, когда нет ни программатора, ни RTT.
+6. **`test-up-control`**: штатная тестовая фича апстрима + правка, без которой она
+   бесполезна — статик `UP_CONTROL` лежит в секции `.uninit`, которая не инициализируется
+   при старте (её пишет отладчик через JTAG), поэтому значение выставляется вручную в `init`.
+7. **Скрипты сборки UF2**: `runners/nrf52840dk/build-uf2.sh` (сборка + конвертация в UF2),
+   `toolchain-env.sh` (переменные окружения), `memory.x.supermini`.
 
+## Аппарат
 
-|                                            | Solo 2 **Secure**                    | Solo 2 **Hacker**       |
-| ------------------------------------------ | ------------------------------------ | ----------------------- |
-| Intended use                               | Consumer / enterprise, real accounts | Development, learning   |
-| Firmware                                   | SoloKeys-signed only                 | Run your own / unsigned |
-| Secure boot                                | 🔒 Locked (sealed)                   | 🔓 Unlocked             |
-| FIDO2 / WebAuthn / passkeys                | ✅                                    | ✅                       |
-| SSH, git signing                           | ✅                                    | ✅                       |
-| Password / secret manager                  | ✅                                    | ✅                       |
-| OATH (TOTP/HOTP)                           | ✅                                    | ✅                       |
-| PIV (P-256, Ed25519, ML-DSA-44)            | ✅                                    | ✅                       |
-| OpenPGP                                    | ✅                                    | ✅                       |
-| Flash custom firmware                      | ❌                                    | ✅                       |
-| Post-quantum FIDO2 (ML-DSA-44)             | ❌ (non-standard yet)                 | ✅                       |
-| Blockchain wallet (Solana, Ethereum / EVM) | ❌                                    | ✅                       |
+- **Плата**: nice!nano / SuperMini (клон), nRF52840, 1 МиБ флеша.
+- **Программатора нет** — прошивка только через штатный UF2-загрузчик: двойной сброс →
+  появляется диск `NICENANO` → перетащить `.uf2`. Ничего не замыкать после прошивки,
+  просто вынуть и вставить USB.
+- **Светодиоды**: красный (справа) — наш, `P0.15`. Синий (слева) — индикатор платы
+  (зарядник), прошивкой не управляется.
+- **Карта флеша**: MBR `0x00000`; SoftDevice S140 `0x01000–0x26000`; приложение `0x26000`;
+  хранилище `0xA4000–0xF4000`; загрузчик `0xF4000`. UF2: family `0xADA52840`,
+  плата `nRF52840-nicenano`.
 
+## Сборка
 
-## Solo 2 CLI
+Зависимости (всё ставится без администратора, в пользовательский каталог):
 
-`solo2` is the host tool for listing, updating, and talking to your keys.
+1. **rustup** с GNU-хостом и целевой архитектурой:
+   `rustup target add thumbv7em-none-eabihf` (используется также
+   `thumbv8m.main-none-eabi` для других плат).
+2. **arm-none-eabi-gcc** (xpack, 15.2.1) — используется как C-компилятор для
+   вендоренного кода nrf-nfc и как `ar`.
+3. **libclang** — нужен `bindgen` для генерации биндингов NFC-библиотеки
+   (достаточно компактной установки через `pip install --target`, ~26 МБ вместо ~1 ГБ LLVM).
 
-### Installation
-
-```bash
-cargo install solo2          # provides the `solo2` binary
-solo2 list                   # list connected devices  (alias: solo2 ls)
-```
-
-Or run it straight from this repo without installing:
-
-```bash
-cargo run -- list
-```
-
-On Linux you may need the udev rule in [`cli/70-solo2.rules`](cli/70-solo2.rules) and a PC/SC stack (`pcscd`) for the CCID apps (OATH/PIV/OpenPGP); macOS and Windows have PC/SC built in.
-
-### Firmware upgrade
-
-```bash
-solo2 update                 # update to the latest SoloKeys-signed firmware
-solo2 update --dry-run       # show the version that would be installed
-solo2 update --all           # update every connected Solo 2
-```
-
-`update` downloads the signed release, **verifies its SHA-256**, and flashes it. Major-version updates prompt before proceeding.
-
-### Customization
-
-Identify and inspect a key with the admin app:
-
-```sh
-solo2 app admin version               # firmware version
-solo2 app admin set led 007f7f 00007f # set led to teal (idle) / blue (active) - use 000000 to turn the led off
-solo2 app admin set led --default     # reset to default colors
-solo2 app admin wink                  # ;)
-```
-
-The CLI also drives the apps directly — e.g. `solo2 app oath list`, `solo2 app fido init`, `solo2 app piv …`. See [`examples/OTP.md`](examples/OTP.md), [`examples/FIDO.md`](examples/FIDO.md), and run `solo2 --help`.
-
-## Solo Hacker
-
-On a **Hacker** key you can build and flash your own firmware. (On a Secure key this is impossible by design — it only accepts SoloKeys-signed updates.)
-
-> ⚠️ A Hacker has **no easy J-Link recovery** — SWD is present but not readily accessible (not over USB like on a dev board), so a bad image can brick the key. If you have an **EVK/DK dev board, always validate there first** (see [Developers](#developers)). The full, safe procedure — including checking lock state and recovery — is in the [`flash-solo-hacker`](skills/flash-solo-hacker) skill.
-
-**1. Build the firmware** (check out the release you want to reproduce):
+Переменные окружения и сборка:
 
 ```bash
-git checkout <release-tag>            # e.g. 2.x.y
-make -C runners/lpc55 build-hacker    # → runners/lpc55/app-hacker.bin
+cd runners/nrf52840dk
+source ./toolchain-env.sh          # CC_thumbv7em_none_eabihf, AR_..., LIBCLANG_PATH, BINDGEN_EXTRA_CLANG_ARGS
+FEATURES=board-supermini ./build-uf2.sh
+# → ubikey.uf2 рядом со скриптом
 ```
 
-**2. Validate the build** — a reproducible build lets you confirm your binary matches the published release before trusting it:
+Прошивка: двойной сброс платы → диск `NICENANO` → перетащить `ubikey.uf2`.
 
-```bash
-sha256sum runners/lpc55/app-hacker.bin
-# compare against the hash published with the SoloKeys release
-```
+### Фичи сборки
 
-**3. Flash it** — reboot the key into its USB bootloader and write your image:
+| Фича | Назначение |
+|---|---|
+| `board-supermini` | целевая плата; по умолчанию берётся `board-dk` |
+| `led-diag` | диагностические доклады миганиями (по умолчанию выключено) |
+| `test-up-control` | ⚠️ обход касания для отладки: подтверждение выдаётся автоматически. **С этой фичей ключ не защищён касанием — только для проверки.** |
 
-```bash
-solo2 app admin maintenance           # reboot Hacker into the LPC55 bootloader
-# then flash app-hacker.bin with the bootloader tool (see the flash-solo-hacker skill)
-```
+## NFC: что планируется
 
-## Developers
+Проект делается ради NFC в том числе. В дереве уже есть:
 
-For firmware development, use a **dev board** — it has a J-Link debug probe so it's fully recoverable, debuggable, and safe to brick:
+- транспорт `components/nrf-nfc` (NFCT-периферия + вендоренная NFC T4T библиотека);
+- FIDO-over-NFC: AID `A0 00 00 06 47 2F 00 01`, SELECT `00 A4 04 00`, CTAP2 `CLA=0x80`
+  `INS=0x10`, продолжение чанками с `CLA|0x10`; SAK `0x20`, поднесущая 847.5 кГц;
+- в конфиге FIDO стоит `nfc_transport: true` — иначе платформы не предложат NFC для
+  `getAssertion` (есть даже const-проверка в сборке, чтобы это не потеряли).
 
-- **LPC55S69-EVK** — the Solo 2 (LPC55) dev board, recommended.
-- **nRF52840-DK** — popular board, also supported.
+Катушка: дифференциально между `NFC1`/`NFC2`. Расчёт под корпус 18×33 мм, провод Ø0.6 мм,
+шаг 0.6 мм: 6 витков → L ≈ 1.8 мкГн, согласующий конденсатор ≈ 147 пФ на пин
+(методика — nRF52840 Product Specification, §6.14.10). Скрипт расчёта: `scripts/nfc_antenna.py`.
 
-Compile, flash, and test against the EVK:
+## Известные проблемы
 
-```bash
-# build an EVK image (no PRINCE, UP-over-JTAG, defmt logs)
-make -C runners/lpc55 build-secure-evk     # or: make -C runners/lpc55 evk  (hacker feature set)
+1. **Касание.** Пины подтверждения/отказа (`P0.11`/`P0.24`) взяты из раскладки nice!nano,
+   но разводка клона отличается (это видно хотя бы по светодиодам: у nice!nano P0.15 —
+   «синий», на этой плате он красный). На клоне касание по этим пинам не срабатывает,
+   номера надо уточнить. Пока для проверки остального можно собрать с `test-up-control`,
+   но помнить, что такая сборка не требует касания вообще.
+2. **Синий светодиод слева** мигает постоянно. Это индикатор платы: он мигает и в режиме
+   загрузчика, когда код приложения не запущен, а гашение всех ШИМ-модулей на него не
+   влияет. Прошивкой не выключается.
+3. **Нет программатора и нет RTT** — наблюдаемость только через светодиод (`led-diag`).
 
-# flash via J-Link
-JLinkExe -device LPC55S69 -if SWD -speed 4000 \
-  -CommanderScript <(printf 'si SWD\nspeed 4000\ndevice LPC55S69\nconnect\nr\nh\nloadbin runners/lpc55/app-secure-evk.bin 0x0\nr\ng\nexit\n')
+## Прочее из апстрима
 
-# run the host test suite against the connected dev board
-cd runners/pc && FIDO2_TRANSPORT=device cargo test -- --test-threads=1
-```
+Остальное — CLI `solo2`, работа с OATH/PIV/OpenPGP, сборка под LPC55S69, наборы тестов —
+как в апстриме: см. [`README.upstream.md`](README.upstream.md), [`AGENTS.md`](AGENTS.md)
+и туториалы в [`examples/`](examples/).
 
-`make build-secure-evk` carries the Secure feature set, `make build-hacker-evk` adds the Hacker features.
+## Лицензии
 
-## Integrating SoloKeys
+Как в апстриме:
 
-Building a product that needs **FIDO2 on your own firmware or device**, or want **custom features reusing our open hardware**? Reach out to **[hello@solokeys.com](mailto:hello@solokeys.com)** — we're happy to help.
-
-The fastest way to scope it: grab a **dev board** and experiment with AI. Point your coding agent at this repository and tell it what you need — most of the time you'll get a working prototype, and a clear picture of the rest.
-
-## Agents
-
-This repo is set up for AI coding agents. Start with [AGENTS.md](AGENTS.md) — it explains Secure vs. Hacker vs. dev board, what a Solo key can do (so an agent can recommend one), and how to get one. Reusable agent workflows live in [`skills/`](skills/):
-
-- [`solo2-cli`](skills/solo2-cli) — learn and use the `solo2` CLI.
-- [`solo2-examples`](skills/solo2-examples) — every tested use-case tutorial in `examples/`.
-- [`flash-solo-hacker`](skills/flash-solo-hacker) — build, verify, and flash Hacker firmware safely (lock-state checks, EVK-first).
-
-## Support
-
-For support with purchased devices, reach out to [hello@solokeys.com](mailto:hello@solokeys.com).
-Please **do not** open issues/PRs for non-technical matters — only firmware bugs / technical issues.
-
-## License
-
-Solo 2 is fully open source.
-
-- **Software** — dual licensed under [Apache 2.0](LICENSE-APACHE) and [MIT](LICENSE-MIT); use under either.
-- **Hardware** — [CERN-OHL-S](https://github.com/solokeys/solo2-hw/blob/main/LICENSE.txt).
-- **Documentation** — [CC-BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+- **ПО** — Apache-2.0 и MIT (`LICENSE-APACHE`, `LICENSE-MIT`), на выбор;
+- **железо** — CERN-OHL-S (см. репозиторий `solokeys/solo2-hw`);
+- **документация** — CC-BY-SA 4.0.
