@@ -40,6 +40,16 @@ mod flash;
 mod initializer;
 mod nfct;
 mod types;
+// UICR (починка NFCPINS) — только для диагностики и разовой правки.
+#[cfg(any(feature = "nfc-diag", feature = "nfc-fix"))]
+mod uicr;
+
+// `nfc-diag` (индикация поля) собирается только вместе с `nfc-fix`: обеим
+// фичам нужен `crate::uicr`, а по отдельности модуль остался бы с мёртвым
+// кодом, что при `-D warnings` = ошибка сборки. Пусть падает с внятным
+// текстом, а не с «unused function».
+#[cfg(all(feature = "nfc-diag", not(feature = "nfc-fix")))]
+compile_error!("nfc-diag собирается вместе с nfc-fix: FEATURES=board-supermini,nfc-fix,nfc-diag");
 
 // HardFault diagnostic handler. Logs the stacked exception frame +
 // fault-status registers via defmt RTT, then halts. Replaces the
@@ -151,6 +161,14 @@ mod app {
 
     #[init]
     fn init(ctx: init::Context) -> (Shared, Local) {
+        // РАЗОВАЯ ПОЧИНКА UICR (только с фичей `nfc-fix`, см. src/uicr.rs).
+        // Никаких мигов: результат виден по светодиоду в idle-цикле — он горит
+        // ровно, если пины P0.09/P0.10 отданы NFCT (см. `diag_nfc_pins_steady`).
+        // Перезагрузку не делаем: NFCPINS действует со следующего сброса, а
+        // автосброс при неудаче дал бы цикл перезагрузок.
+        #[cfg(feature = "nfc-fix")]
+        let _ = crate::uicr::fix_nfcpins();
+
         // ДИАГНОСТИКА (только с фичей `test-up-control`). Статик `UP_CONTROL`
         // лежит в `.uninit` — секция не инициализируется при старте, и значение
         // из исходника в RAM не попадает (её пишет отладчик через JTAG). Поэтому
@@ -237,6 +255,13 @@ mod app {
     #[idle(shared = [apps, ctaphid_dispatch, apdu_dispatch, nfc_apdu_rq, usbd, ctaphid, #[cfg(feature = "ccid")] ccid, #[cfg(feature = "wallet")] wallet, #[cfg(feature = "wallet")] wallet_hid, ctaphid_keepalive_sender], local = [buttons, gesture, leds])]
     fn idle(mut ctx: idle::Context) -> ! {
         loop {
+            // Диагностика NFC (фича `nfc-fix` без `nfc-diag`): ровное горение =
+            // пины P0.09/P0.10 отданы NFCT; «не горит» = UICR всё ещё в режиме
+            // GPIO. Ни мигов, ни кодов: считать их на плате без консоли слишком
+            // легко ошибиться. Идёт после `refresh_up_led`, чтобы перебить его.
+            #[cfg(all(feature = "nfc-fix", not(feature = "nfc-diag")))]
+            crate::board::diag_nfc_pins_steady();
+
             // Диагностика (только с фичей `led-diag`): события USBD читаем ДО
             // любого poll(), чтобы не пропустить их, плюс неблокирующий доклад
             // о трассе EP0. Блокировать цикл нельзя: драйвер считает таймаут
@@ -263,6 +288,23 @@ mod app {
             // Drive the UP/"waiting" LED: on when trussed is waiting (FIDO) or
             // a wallet sign is waiting. Cheap (atomic loads + one GPIO write).
             crate::board::refresh_up_led(ctx.local.leds);
+
+            // Диагностика разводки кнопок (фича `pin-diag`): в простое
+            // светодиод показывает состояние пинов касания. Идёт ПОСЛЕ
+            // `refresh_up_led`, чтобы перебить его «выключено» в простое, и
+            // молчит во время ожидания касания (см. `diag_pin_mirror`).
+            #[cfg(all(feature = "pin-diag", feature = "board-supermini"))]
+            {
+                use rtic_monotonics::Monotonic;
+                let now_ms = crate::app::Mono::now().duration_since_epoch().to_millis();
+                crate::board::diag_pin_mirror(ctx.local.leds, now_ms);
+            }
+
+            // Диагностика NFC (фича `nfc-diag`): светодиод горит, пока на
+            // катушке есть поле считывателя. Единственный способ проверить
+            // катушку и настройку контура без LCR/nanoVNA (см. `diag_nfc_field`).
+            #[cfg(all(feature = "nfc-diag", feature = "board-supermini"))]
+            crate::board::diag_nfc_field();
 
             // Run the contactless drain inline once per loop too, in
             // case nfc_drain raced and an APDU is sitting in the
